@@ -6,7 +6,6 @@ import { ChunkLines } from "../components/ChunkLines.tsx";
 import { FilterChip } from "../components/FilterChip.tsx";
 import { VocabPill } from "../components/VocabPill.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { useDB } from "../hooks/useDB.ts";
 import { useSentences } from "../hooks/useSentences.ts";
 import { PATTERN_LABELS } from "../constants.ts";
 
@@ -108,9 +107,13 @@ function formatExpression(text: string): string {
   return text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
 }
 
-export function Sentences() {
-  const db = useDB();
-  const { records, filter, setFilter, availablePatterns, loading } = useSentences(db);
+interface SentencesProps {
+  db: IDBDatabase | null;
+  isExample: boolean;
+}
+
+export function Sentences({ db, isExample }: SentencesProps) {
+  const { records, filter, setFilter, availablePatterns, loading } = useSentences(db, isExample);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   if (loading) return null;

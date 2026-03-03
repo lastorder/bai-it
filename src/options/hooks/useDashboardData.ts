@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import type { LearningRecord, PatternKey } from "../../shared/types.ts";
 import { learningRecordDAO, vocabDAO } from "../../shared/db.ts";
+import { EXAMPLE_DASHBOARD } from "../exampleData.ts";
 
 export interface DashboardData {
   totalSentences: number;
@@ -10,7 +11,7 @@ export interface DashboardData {
   loading: boolean;
 }
 
-export function useDashboardData(db: IDBDatabase | null): DashboardData {
+export function useDashboardData(db: IDBDatabase | null, isExample?: boolean): DashboardData {
   const [data, setData] = useState<DashboardData>({
     totalSentences: 0,
     totalWords: 0,
@@ -20,6 +21,11 @@ export function useDashboardData(db: IDBDatabase | null): DashboardData {
   });
 
   useEffect(() => {
+    if (isExample) {
+      setData(EXAMPLE_DASHBOARD);
+      return;
+    }
+
     if (!db) return;
 
     async function load() {
@@ -44,7 +50,7 @@ export function useDashboardData(db: IDBDatabase | null): DashboardData {
     }
 
     load();
-  }, [db]);
+  }, [db, isExample]);
 
   return data;
 }

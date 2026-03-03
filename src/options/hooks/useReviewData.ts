@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import type { LearningRecord, VocabRecord } from "../../shared/types.ts";
 import { learningRecordDAO, vocabDAO } from "../../shared/db.ts";
+import { EXAMPLE_REVIEW } from "../exampleData.ts";
 
 export interface ReviewData {
   /** Today's sentence for break-point practice (prioritize "valuable" ones) */
@@ -12,7 +13,7 @@ export interface ReviewData {
   loading: boolean;
 }
 
-export function useReviewData(db: IDBDatabase | null): ReviewData {
+export function useReviewData(db: IDBDatabase | null, isExample?: boolean): ReviewData {
   const [data, setData] = useState<ReviewData>({
     practiseSentence: null,
     todayVocab: [],
@@ -21,6 +22,11 @@ export function useReviewData(db: IDBDatabase | null): ReviewData {
   });
 
   useEffect(() => {
+    if (isExample) {
+      setData(EXAMPLE_REVIEW);
+      return;
+    }
+
     if (!db) return;
 
     async function load() {
@@ -77,7 +83,7 @@ export function useReviewData(db: IDBDatabase | null): ReviewData {
     }
 
     load();
-  }, [db]);
+  }, [db, isExample]);
 
   return data;
 }

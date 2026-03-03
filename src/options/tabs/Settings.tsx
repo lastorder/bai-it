@@ -1,10 +1,8 @@
 import { useState, useCallback } from "react";
-import type { ProviderKey } from "../../shared/types.ts";
+import type { ProviderKey, BaitConfig, LLMMultiConfig } from "../../shared/types.ts";
 import { DEFAULT_PROVIDERS } from "../../shared/types.ts";
 import { GlassCard } from "../components/GlassCard.tsx";
 import { SegmentedControl } from "../components/SegmentedControl.tsx";
-import { useConfig } from "../hooks/useConfig.ts";
-import { useDB } from "../hooks/useDB.ts";
 import { PROVIDER_INFO } from "../constants.ts";
 import {
   learningRecordDAO,
@@ -49,9 +47,15 @@ function keyToIntensity(k: string): number {
   return 1;
 }
 
-export function Settings() {
-  const { config, loading, saveConfig, updateLLM } = useConfig();
-  const db = useDB();
+interface SettingsProps {
+  db: IDBDatabase | null;
+  config: BaitConfig;
+  configLoading: boolean;
+  saveConfig: (partial: Partial<BaitConfig>) => Promise<void>;
+  updateLLM: (partial: Partial<LLMMultiConfig>) => Promise<void>;
+}
+
+export function Settings({ db, config, configLoading: loading, saveConfig, updateLLM }: SettingsProps) {
   const [activeProvider, setActiveProvider] = useState<ProviderKey>("gemini");
   const [saved, setSaved] = useState(false);
   const [dataStats, setDataStats] = useState<{ sentences: number; words: number; size: string } | null>(null);

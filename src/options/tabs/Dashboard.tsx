@@ -3,10 +3,11 @@ import { GlassCard } from "../components/GlassCard.tsx";
 import { PatternTag } from "../components/PatternTag.tsx";
 import { ChunkLines } from "../components/ChunkLines.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { useDB } from "../hooks/useDB.ts";
 import { useDashboardData } from "../hooks/useDashboardData.ts";
 
 interface DashboardProps {
+  db: IDBDatabase | null;
+  isExample: boolean;
   onGoToReview: () => void;
 }
 
@@ -31,9 +32,8 @@ function extractDomain(url?: string): string {
   }
 }
 
-export function Dashboard({ onGoToReview }: DashboardProps) {
-  const db = useDB();
-  const { totalSentences, totalWords, masteredWords, recentSentences, loading } = useDashboardData(db);
+export function Dashboard({ db, isExample, onGoToReview }: DashboardProps) {
+  const { totalSentences, totalWords, masteredWords, recentSentences, loading } = useDashboardData(db, isExample);
 
   if (loading) return null;
 

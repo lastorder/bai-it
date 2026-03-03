@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { NavBar } from "./components/NavBar.tsx";
+import { OnboardingBanner } from "./components/OnboardingBanner.tsx";
 import { Dashboard } from "./tabs/Dashboard.tsx";
 import { DailyReview } from "./tabs/DailyReview.tsx";
 import { Sentences } from "./tabs/Sentences.tsx";
 import { Settings } from "./tabs/Settings.tsx";
+import { useDB } from "./hooks/useDB.ts";
+import { useConfig } from "./hooks/useConfig.ts";
+import { useOnboardingState } from "./hooks/useOnboardingState.ts";
 
 export type TabKey = "dashboard" | "review" | "sentences" | "settings";
 
@@ -19,6 +23,13 @@ export function App() {
   const [activeTab, setActiveTab] = useState<TabKey>(getTabFromHash);
   // Increment key on tab change to retrigger stagger animation
   const [tabKey, setTabKey] = useState(0);
+
+  // Lifted state: DB and config
+  const db = useDB();
+  const { config, loading: configLoading, saveConfig, updateLLM } = useConfig();
+  const { state: onboardingState, loading: onboardingLoading } = useOnboardingState(db, config, configLoading);
+
+  const isExample = onboardingState !== "has-data";
 
   const handleTabChange = useCallback((tab: TabKey) => {
     setActiveTab(tab);
@@ -41,20 +52,38 @@ export function App() {
       <div className="ambience" />
       <div className="inner">
         <NavBar activeTab={activeTab} onTabChange={handleTabChange} />
+
+        {/* Onboarding banner — above content, not shown on settings tab */}
+        {activeTab !== "settings" && !onboardingLoading && (
+          <OnboardingBanner
+            state={onboardingState}
+            onGoToSettings={() => handleTabChange("settings")}
+          />
+        )}
+
         <div style={{ position: "relative" }}>
           <div className={`tab-panel ${activeTab === "dashboard" ? "active" : ""}`}>
             {activeTab === "dashboard" && (
-              <Dashboard key={tabKey} onGoToReview={() => handleTabChange("review")} />
+              <Dashboard key={tabKey} db={db} isExample={isExample} onGoToReview={() => handleTabChange("review")} />
             )}
           </div>
           <div className={`tab-panel ${activeTab === "review" ? "active" : ""}`}>
-            {activeTab === "review" && <DailyReview key={tabKey} />}
+            {activeTab === "review" && <DailyReview key={tabKey} db={db} isExample={isExample} />}
           </div>
           <div className={`tab-panel ${activeTab === "sentences" ? "active" : ""}`}>
-            {activeTab === "sentences" && <Sentences key={tabKey} />}
+            {activeTab === "sentences" && <Sentences key={tabKey} db={db} isExample={isExample} />}
           </div>
           <div className={`tab-panel ${activeTab === "settings" ? "active" : ""}`}>
-            {activeTab === "settings" && <Settings key={tabKey} />}
+            {activeTab === "settings" && (
+              <Settings
+                key={tabKey}
+                db={db}
+                config={config}
+                configLoading={configLoading}
+                saveConfig={saveConfig}
+                updateLLM={updateLLM}
+              />
+            )}
           </div>
         </div>
       </div>

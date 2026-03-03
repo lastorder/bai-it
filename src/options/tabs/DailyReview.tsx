@@ -3,19 +3,22 @@ import { GlassCard } from "../components/GlassCard.tsx";
 import { ChunkLines } from "../components/ChunkLines.tsx";
 import { BreakPointSentence } from "../components/BreakPointSentence.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { useDB } from "../hooks/useDB.ts";
 import { useReviewData } from "../hooks/useReviewData.ts";
 import { vocabDAO } from "../../shared/db.ts";
 
-export function DailyReview() {
-  const db = useDB();
-  const { practiseSentence, todayVocab, weekSentenceCount, loading } = useReviewData(db);
+interface DailyReviewProps {
+  db: IDBDatabase | null;
+  isExample: boolean;
+}
+
+export function DailyReview({ db, isExample }: DailyReviewProps) {
+  const { practiseSentence, todayVocab, weekSentenceCount, loading } = useReviewData(db, isExample);
   const [breakCount, setBreakCount] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);
   const [masteredIds, setMasteredIds] = useState<Set<string>>(new Set());
 
   const handleToggleMastered = useCallback(async (vocabId: string) => {
-    if (!db) return;
+    if (isExample || !db) return;
     const vocab = await vocabDAO.getById(db, vocabId);
     if (!vocab) return;
     const newStatus = vocab.status === "mastered" ? "new" : "mastered";
@@ -29,7 +32,7 @@ export function DailyReview() {
       else next.delete(vocabId);
       return next;
     });
-  }, [db]);
+  }, [db, isExample]);
 
   if (loading) return null;
 

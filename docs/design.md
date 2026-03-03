@@ -76,6 +76,15 @@
 
 ## UI 文案参考
 
+### 引导提示条（Onboarding Banner）
+
+管理端在无真实数据时，内容区顶部（导航栏下方、所有模块前面）显示提示条。设置 Tab 下不显示。
+
+| 状态 | 文案 |
+|------|------|
+| 无 API Key | 以下是示例数据。配置 API Key 后，你浏览英文网页时就会自动积累真实的学习数据。[去设置 →] |
+| 有 Key 无数据 | 以下是示例数据。去浏览几篇英文网页，掰it 会自动帮你拆句、记词，你的学习数据就会出现在这里。 |
+
 ### 首次安装
 
 | 场景 | 文案 |
@@ -511,6 +520,25 @@ background: rgba(239,68,68,0.15);
 /* 选中 */ background: #ef4444; box-shadow: 0 0 16px rgba(239,68,68,0.4); width: 4px; height: 24px;
 ```
 
+**引导提示条（Onboarding Banner）**
+
+```css
+padding: 16px 24px;
+background: rgba(239,68,68,0.04);
+border: none;
+border-left: 3px solid rgba(239,68,68,0.5);
+border-radius: 0 10px 10px 0;
+/* 位置：导航栏下方、所有内容模块前面 */
+/* "去设置 →" 按钮 */
+.banner-link {
+  background: rgba(239,68,68,0.1);
+  border: 1px solid rgba(239,68,68,0.15);
+  color: #fca5a5;
+  border-radius: 6px;
+  padding: 8px 20px;
+}
+```
+
 **生词 Tooltip**
 
 ```css
@@ -556,6 +584,16 @@ animation: breathe 10s ease-in-out infinite alternate; /* opacity 1→0.5→1 */
 ## 页面布局规范
 
 Options 页的四个 Tab（总览、每日回味、难句集、设置）共享同一个顶部导航栏。Popup 和 Content Script 是独立界面。
+
+### 引导态布局
+
+四个 Tab 始终可见。无真实数据时展示示例数据 + 顶部提示条。
+
+- **提示条位置**：导航栏下方，所有内容模块前面（让用户第一眼看到）
+- **提示条视觉**：左侧红色竖线 callout 风格，和毛玻璃内容卡片明确区分
+- **设置 Tab**：始终可操作，不显示提示条
+- **切换条件**：`learning_records` 表有 ≥ 1 条记录时，所有 Tab 同时切换到真实数据，提示条消失
+- **设计原型**：`playground-onboarding.html`
 
 ### 共享导航栏
 

@@ -4,11 +4,11 @@
 
 ```
 Chrome 扩展（单包，零后端）
-├── Content Script — 扫描页面、模式判断、渲染分块
-├── Background Service Worker — 调 LLM API、批量处理
-├── Popup — 开关、模式切换、LLM 配置
-├── Options 页（React）— 生词本、学习记录、周报、壁纸
-└── IndexedDB — 所有数据
+├── Content Script — 全站自动扫读 + 手动触发 + 数据采集
+├── Background Service Worker — 调 LLM API、处理手动触发请求
+├── Popup — 站点开关、辅助力度、显示方式
+├── Options 页（React）— 难句集（懒处理）、每日回味、总览、设置
+└── IndexedDB — 所有数据（含 pending_sentences 待分析队列）
 ```
 
 ## 构建工具
@@ -28,7 +28,7 @@ Chrome 扩展（单包，零后端）
 掰it/
 ├── src/
 │   ├── content/              # Content Script
-│   │   ├── index.ts          # DOM 扫描、模式判断、注入
+│   │   ├── index.ts          # DOM 扫描、自动扫读、手动触发、数据采集
 │   │   ├── renderer.ts       # 分块结果渲染（复用旧项目）
 │   │   ├── styles.ts         # CSS（复用旧项目）
 │   │   └── vocab-panel.ts    # 词汇面板（复用旧项目）
@@ -40,10 +40,10 @@ Chrome 扩展（单包，零后端）
 │   │   └── App.tsx           # 生词本、学习记录等
 │   └── shared/               # 共享模块
 │       ├── types.ts          # 类型定义（复用旧项目，按需调整）
-│       ├── rule-engine.ts    # 细读模式复杂度判断（复用旧项目，调高长度权重）
-│       ├── scan-rules.ts     # 扫读模式本地拆分规则（新写）
+│       ├── rule-engine.ts    # 英文检测 + 复杂度估算（isEnglish、estimateComplexity）
+│       ├── scan-rules.ts     # 自动扫读本地拆分规则
 │       ├── cache.ts          # IndexedDB 缓存（复用旧项目）
-│       ├── db.ts             # IndexedDB 数据层（新写，9 张表）
+│       ├── db.ts             # IndexedDB 数据层（新写，10 张表，含 pending_sentences）
 │       └── llm-adapter.ts    # LLM 适配层（新写）
 ├── data/
 │   ├── word-frequency.json   # 英文常用词频表（内置，离线）
@@ -72,60 +72,43 @@ Chrome 扩展（单包，零后端）
   └── 不能（复杂句）→ 调 LLM 拆分 + LLM 返回语境化生词释义 → 1-2 秒后显示
 ```
 
-两种模式共用这个两级架构，区别在于阈值和策略：
+不再区分扫读/细读两种模式。所有英文网页统一处理流程：
 
-### 扫读模式的处理流程
+### 自动扫读处理流程（所有页面）
 
-1. **本地规则拆分**（scan-rules.ts，新写）
+1. **本地规则拆分**（scan-rules.ts）
    - 不依赖从句标记词，核心判断：句子长度 + 逻辑转换点
    - 在逻辑转换点断行：并列（and/or/but）、转折（however/although）、条件（if/unless）、因果（because/therefore）、从句引导（which/who/that）等
    - 长度阈值可调（短/中/长三档，默认中）
    - 保留缩进层级
    - **即时完成，零 API 成本**
 
-2. **复杂句降级到 LLM**
-   - 本地规则判断句子复杂度超过阈值（多层嵌套等）→ 发给 LLM
-   - LLM 返回精准分块 + 语境化生词释义
-   - 有 1-2 秒延迟，但只占少数句子
-
-3. **生词标注（本地部分）**
+2. **生词标注（本地）**
    - 词频表过滤：不在常用 5000-8000 词表里的词 → 标注虚线
    - 行业术语包优先：用户勾选的行业（V1 默认 AI 行业），术语用行业语境释义覆盖通用词典义
    - 已知词过滤：用户标记为"已掌握"的词自动跳过
    - 释义来源：行业包 > 离线词典 > 不标注
    - hover 显示释义，不直接展示
 
-### 细读模式的处理流程
+3. **数据采集（后台静默）**
+   - 扫读过程中遇到的句子 + 生词 + 来源 URL + 时间戳，存入 IndexedDB `pending_sentences` 表
+   - 零成本，不影响渲染性能
 
-1. **规则引擎判断**（rule-engine.ts，微调）
-   - 沿用旧项目的复杂度评估逻辑
-   - 提高句子长度权重（15 词 +1.0，25 词 +1.0，40 词 +1.0，原来都是 +0.5）
-   - 复杂度 ≥ 灵敏度阈值 → 自动调 LLM 拆分
-   - 低于阈值 → 挂手动触发按钮
+### 手动触发处理流程
 
-2. **LLM 返回语境化释义**
-   - 细读模式调 LLM 时，同时返回基于上下文的生词释义
-   - 释义精准匹配当前语境
+1. **无 API key**：本地强制拆分（忽略长度阈值，调用 scanSplit 但 threshold 设为最低）
+2. **有 API key**：发 LLM 深度分析，返回分块 + 句式分类 + 讲解 + 表达 + 语境化释义
+3. **数据采集**：手动触发的句子标记 `manual: true`，优先级高于自动采集
 
-3. **进入页面辅助**
-   - 生词汇总面板：扫描全文，列出难词
+### 管理端懒处理流程
 
-### 模式自动判断
+用户打开管理端 → 从 `pending_sentences` 拉取未分析的句子 → 按页发 LLM（每页 10 条）→ 分析结果存入 `learning_records` → 下次不重复分析。详见 PRD「数据采集策略」。
 
-Content Script 进入页面时，根据 URL 和 DOM 结构判断：
+### 删除的逻辑
 
-| 页面类型 | URL 特征 | 模式 |
-|---------|---------|------|
-| 推特时间线 | `twitter.com/home`, `x.com/home` | 扫读 |
-| 推特搜索 | `twitter.com/search` | 扫读 |
-| 推特详情 | `twitter.com/xxx/status/xxx` | 细读 |
-| Reddit 列表 | `reddit.com/r/xxx` | 扫读 |
-| Reddit 帖子 | `reddit.com/r/xxx/comments/xxx` | 细读 |
-| 文章页 | 有 `<article>` 或长文内容 | 细读 |
-| 其他 | 默认 | 细读 |
-
-信息流中特别长的内容（推特长 thread 等），自动提升辅助力度。
-Popup 手动切换可覆盖自动判断。
+- ~~`detectReadingMode()`~~：不再按站点判断模式
+- ~~细读模式复杂度判断~~：不再自动发 LLM，统一由手动触发
+- ~~模式自动判断表~~：不再维护站点-模式映射
 
 ## 生词系统的词汇来源
 
@@ -189,11 +172,27 @@ Popup 手动切换可覆盖自动判断。
 | `vocab_contexts` | 生词出处（原句、语境释义、来源 URL） |
 | `patterns` | 句式类型（that 从句嵌套等） |
 | `pattern_examples` | 句式实例（具体例句） |
-| `learning_records` | 阅读记录（原文、分块结果、分析、`llm_provider`、`tokens_used`） |
+| `pending_sentences` | **待分析句子队列**（自动扫读 + 手动触发采集的原始句子，管理端按需发 LLM 分析） |
+| `learning_records` | 阅读记录（原文、分块结果、分析、`llm_provider`、`tokens_used`）— 由管理端懒处理写入 |
 | `settings` | 用户设置（含 `llm_provider`、`llm_model`、`llm_api_key`） |
 | `weekly_reports` | 周报缓存 |
 | `review_items` | 间隔重复队列（SM-2 算法） |
 | `wallpaper_records` | 壁纸生成记录 |
+
+#### pending_sentences 表结构
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | UUID | 主键 |
+| `text` | string | 原始句子文本 |
+| `source_url` | string | 来源页面 URL |
+| `source_hostname` | string | 来源域名（便于按站点筛选） |
+| `manual` | boolean | 是否手动触发（手动触发的优先展示） |
+| `new_words` | string[] | 本地标注的生词列表 |
+| `analyzed` | boolean | 是否已被管理端分析（索引字段） |
+| `created_at` | number | 采集时间戳 |
+| `updated_at` | number | 更新时间戳 |
+| `is_dirty` | boolean | 同步预留 |
 
 ## 代码复用（来自旧项目）
 
@@ -234,6 +233,95 @@ Popup 手动切换可覆盖自动判断。
 | `db.ts` | IndexedDB 数据层（9 张表） |
 | `data/industry-ai.json` | AI 行业术语包 |
 | Options 页 | React 管理界面 |
+
+## 管理端示例数据 + 提示条（技术方案）
+
+### 三种状态
+
+| 状态 | 条件 | 管理端行为 |
+|------|------|-----------|
+| `no-key` | 所有 Provider 的 apiKey 为空 | 四 Tab 显示示例数据 + 提示条（引导配 key） |
+| `has-key-no-data` | 至少一个 Provider 有 apiKey，但 `learning_records` 表为空 | 四 Tab 显示示例数据 + 提示条（引导浏览网页） |
+| `has-data` | `learning_records` 表有 ≥1 条记录 | 真实数据，提示条消失 |
+
+设置 Tab 始终可操作，不显示提示条。
+
+### 方案：hooks 感知示例模式
+
+App 层检测状态 → 传 `isExample` 给 Tab → Tab 传给 hook → hook 在示例模式下返回硬编码数据。Tab 渲染逻辑不变。
+
+### 新建文件（3 个）
+
+**`src/options/exampleData.ts`** — 硬编码示例数据
+
+导出三个常量，类型匹配对应 hook 的返回值：
+- `EXAMPLE_DASHBOARD: DashboardData` — 统计 23/47/12 + 3 条句子（插入补充/层层嵌套/对比转折）
+- `EXAMPLE_REVIEW: ReviewData` — 断句练习（自动驾驶句）+ 3 词汇 + 周统计 15
+- `EXAMPLE_SENTENCES` — 5 条句子（覆盖 5 种句式）+ 5 种筛选标签
+
+句子内容见 `docs/prd.md`「示例数据内容」章节。`LearningRecord` 对象用固定 UUID，`created_at` 用相对时间偏移。
+
+**`src/options/hooks/useOnboardingState.ts`** — 状态检测 hook
+
+```ts
+type OnboardingState = 'no-key' | 'has-key-no-data' | 'has-data';
+function useOnboardingState(db: IDBDatabase | null, config: BaitConfig): {
+  state: OnboardingState;
+  loading: boolean;
+}
+```
+
+- `hasKey`：遍历 `config.llm.providers`，任意一个 `apiKey` 非空
+- `hasData`：`learningRecordDAO.getAll(db).length > 0`
+
+**`src/options/components/OnboardingBanner.tsx`** — 提示条组件
+
+- Props: `state: OnboardingState`, `onGoToSettings: () => void`
+- `has-data` 时返回 null
+- CSS：左 3px 红色竖线 callout，`rgba(239,68,68,0.04)` 背景
+
+### 修改文件（6 个）
+
+**`App.tsx`** — 提升状态到顶层
+
+- 将 `useDB()` 和 `useConfig()` 从各 Tab 提升到 App
+- 新增 `useOnboardingState(db, config)`
+- NavBar 和 Tab 内容之间渲染 `<OnboardingBanner>`（设置 Tab 不渲染）
+- 给 Tab 传 `db` 和 `isExample`（`state !== 'has-data'`）
+
+**`useDashboardData.ts` / `useReviewData.ts` / `useSentences.ts`** — 加 `isExample` 参数
+
+示例模式下直接返回对应的 `EXAMPLE_*` 常量，不查 DB。
+
+**`Dashboard.tsx` / `DailyReview.tsx` / `Sentences.tsx`** — 接收新 props
+
+- 接收 `db` 和 `isExample` props（不再自己调 `useDB()`）
+- 传 `isExample` 给数据 hook
+- DailyReview：示例模式下 `handleToggleMastered` 变 no-op
+- 删除原有 EmptyState 分支（示例模式下不会有空状态）
+
+**`Settings.tsx`** — 接收 `db` prop
+
+不再自己调 `useDB()`，但其余逻辑不变。
+
+**Options CSS** — 加提示条样式
+
+```css
+.onboarding-banner { ... }
+.banner-link { ... }
+```
+
+### 不改的文件
+
+- `useConfig.ts` — 不变
+- `NavBar.tsx` — 不变
+- 所有渲染组件（GlassCard / ChunkLines / PatternTag 等）— 不变
+- IndexedDB 数据层 — 不变
+
+### 状态响应
+
+- 配 API key 后切 Tab → `useOnboardingState` 重算 → 提示条文案更新
+- 浏览网页产生数据后回到 Options 页 → Tab 重新 mount → hook 查到数据 → 切换到真实模式
 
 ## 开发顺序
 

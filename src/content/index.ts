@@ -18,7 +18,6 @@ import type { BaitConfig, ChunkResult, BackgroundMessage } from "../shared/types
 import { DEFAULT_CONFIG } from "../shared/types.ts";
 import { createChunkedElement } from "./renderer.ts";
 import { ENLEARN_STYLES } from "./styles.ts";
-import { initVocabPanel, addWords, setScanningStatus, destroyVocabPanel } from "./vocab-panel.ts";
 
 // ========== 词汇数据（构建时打包）==========
 
@@ -207,9 +206,6 @@ function activate(): void {
   if (isActive) return;
   isActive = true;
 
-  initVocabPanel();
-  setScanningStatus(true);
-
   setupIntersectionObserver();
   scanPage();
   setupMutationObserver();
@@ -222,8 +218,6 @@ function activate(): void {
 function deactivate(): void {
   if (!isActive) return;
   isActive = false;
-
-  destroyVocabPanel();
 
   intersectionObserver?.disconnect();
   intersectionObserver = null;
@@ -266,8 +260,6 @@ function deactivate(): void {
 function pauseProcessing(): void {
   if (!isActive || isPaused) return;
   isPaused = true;
-  setScanningStatus(false);
-
   mutationObserver?.disconnect();
   intersectionObserver?.disconnect();
   processQueue.length = 0;
@@ -286,8 +278,6 @@ function pauseProcessing(): void {
 function resumeProcessing(): void {
   if (!isActive || !isPaused) return;
   isPaused = false;
-  setScanningStatus(true);
-
   document.body.classList.remove("enlearn-paused");
 
   // 恢复时用新配置重新处理（而非显示旧结果）
@@ -478,6 +468,19 @@ function restoreReplacedElements(): void {
   });
 }
 
+// ========== 数据采集 ==========
+
+function saveSentenceQuiet(text: string, manual: boolean, newWords: string[]): void {
+  sendMessage({
+    type: "saveSentence",
+    text,
+    source_url: window.location.href,
+    source_hostname: window.location.hostname,
+    manual,
+    new_words: newWords,
+  }).catch(() => {});
+}
+
 // ========== DOM 扫描 ==========
 
 const DOM_SELECTORS = [
@@ -541,6 +544,9 @@ function scanPage(): void {
       ? annotateWords(text, knownWords, config.industryPacks)
       : [];
 
+    // 收集生词列表（只要词）
+    const sentenceNewWords = vocabAnnotations.map(a => a.word);
+
     if (hasAnyChunks) {
       // 有本地拆分结果 → 渲染（带生词标注）
       const chunkedString = allChunkedLines.join("\n");
@@ -554,18 +560,14 @@ function scanPage(): void {
       if (chunkedEl) {
         copyFontStyles(el, chunkedEl);
         insertChunkedElement(el, chunkedEl);
-
-        if (vocabAnnotations.length > 0) {
-          addWords(chunkResult.newWords, text);
-        }
       }
     } else {
       // 没拆开 → 保留原始 DOM，只在原始元素上挂手动触发
-      if (vocabAnnotations.length > 0) {
-        addWords(toNewWordsFormat(vocabAnnotations), text);
-      }
       addManualTrigger(el, text);
     }
+
+    // fire-and-forget 存句到 pending_sentences
+    saveSentenceQuiet(text, false, sentenceNewWords);
   }
 }
 
@@ -632,9 +634,9 @@ function addManualTrigger(el: Element, text: string): void {
           insertChunkedElement(el, chunkedEl);
           btn.remove();
 
-          if (result.newWords && result.newWords.length > 0) {
-            addWords(result.newWords, result.original);
-          }
+          // 手动触发 → 标记 manual: true
+          const newWordsList = result.newWords?.map(w => w.word) ?? [];
+          saveSentenceQuiet(text, true, newWordsList);
         }
       } else {
         // 拆不动 → 移除按钮
@@ -726,10 +728,6 @@ async function flushProcessQueue(): Promise<void> {
         copyFontStyles(el, chunkedEl);
         insertChunkedElement(el, chunkedEl);
         chunkedTexts.add(result.original);
-
-        if (result.newWords && result.newWords.length > 0) {
-          addWords(result.newWords, result.original);
-        }
       }
     }
   } catch {
@@ -745,8 +743,6 @@ async function flushProcessQueue(): Promise<void> {
 
   if (processQueue.length > 0 && isActive) {
     processTimer = setTimeout(flushProcessQueue, 50);
-  } else {
-    setScanningStatus(false);
   }
 }
 

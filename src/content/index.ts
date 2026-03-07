@@ -343,51 +343,6 @@ function onStorageChanged(changes: { [key: string]: chrome.storage.StorageChange
   }
 }
 
-// ========== URL 检测 ==========
-
-const URL_PATTERN = /https?:\/\/\S+/;
-
-/**
- * 过滤 URL 段落片段
- *
- * Twitter 等站点的 DOM 会把一条 URL 拆成多个 <span>（如 "https://"、
- * "claude.com/community/amba"、"ssador"、"…"），导致 innerText 产生
- * 多个短段落。这里检测以 "http(s)://" 开头的段落，并把后续的单词片段
- * （仅 1 个词的段落）一并过滤掉。
- */
-function filterUrlParagraphs(paragraphs: string[]): string[] {
-  const result: string[] = [];
-  let inUrl = false;
-
-  for (const para of paragraphs) {
-    const trimmed = para.trim();
-
-    // URL 起始
-    if (/^https?:\/\//.test(trimmed)) {
-      inUrl = true;
-      continue; // 跳过
-    }
-
-    if (inUrl) {
-      // 省略号标志 URL 结束
-      if (/^[…⋯.]{1,3}$/.test(trimmed)) {
-        inUrl = false;
-        continue;
-      }
-      // 单词段落（无空格）→ 仍是 URL 片段
-      if (!/\s/.test(trimmed)) {
-        continue;
-      }
-      // 多词段落 → 不再是 URL 片段
-      inUrl = false;
-    }
-
-    result.push(para);
-  }
-
-  return result;
-}
-
 // ========== 文本提取工具 ==========
 
 /**
@@ -516,6 +471,277 @@ function saveSentenceQuiet(text: string, manual: boolean, newWords: string[]): v
   }).catch(() => {});
 }
 
+// ========== DOM 手术：含链接元素的原地拆分 ==========
+
+/**
+ * 判断文本节点是否在 URL 链接内部（href 以 http 开头的 <a>）
+ * @mention / #hashtag 等非 URL 链接不算
+ */
+function isInsideUrlAnchor(node: Node): boolean {
+  const anchor = (node.parentElement as Element | null)?.closest('a[href^="http"]');
+  return !!anchor;
+}
+
+/**
+ * 判断两个相邻文本节点之间是否存在块级分隔（段落边界）
+ */
+function hasBlockBoundaryBetween(nodeA: Node, nodeB: Node): boolean {
+  const parentA = nodeA.parentElement;
+  const parentB = nodeB.parentElement;
+  if (!parentA || !parentB) return false;
+
+  // 如果两个节点不在同一个父元素下，检查路径上是否有 block 元素
+  if (parentA !== parentB) {
+    // 简单启发式：不同父 → 视为段落分隔
+    // （精确判断需要遍历 DOM 路径，成本高且边际收益小）
+    const commonAncestor = parentA.closest(':has(> br, > div, > p)');
+    if (commonAncestor) return true;
+  }
+
+  // 同父元素下，检查两个文本节点之间是否有 <br>
+  let current: Node | null = nodeA.nextSibling;
+  while (current && current !== nodeB) {
+    if (current.nodeType === Node.ELEMENT_NODE) {
+      const tag = (current as Element).tagName;
+      if (tag === "BR" || tag === "DIV" || tag === "P") return true;
+    }
+    current = current.nextSibling;
+  }
+  return false;
+}
+
+interface TextEntry {
+  node: Text;
+  globalStart: number;
+  globalEnd: number;
+}
+
+interface Breakpoint {
+  offset: number; // fullText 中的字符偏移
+  level: number;  // 缩进级别
+}
+
+/**
+ * 对含链接的元素执行 clone + DOM 手术
+ *
+ * 核心原则：只动 text node，不动 element node → <a> 完整保留
+ */
+function processElementWithLinks(el: Element, text: string): void {
+  // 1. 克隆
+  const clone = el.cloneNode(true) as HTMLElement;
+
+  // 2. TreeWalker 收集非 URL 文本节点
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT, {
+    acceptNode(node: Node) {
+      if (isInsideUrlAnchor(node)) return NodeFilter.FILTER_REJECT;
+      // 跳过纯空白节点
+      if (!node.textContent || node.textContent.trim() === "") return NodeFilter.FILTER_SKIP;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  let walkerNode: Node | null;
+  while ((walkerNode = walker.nextNode())) {
+    textNodes.push(walkerNode as Text);
+  }
+
+  if (textNodes.length === 0) return;
+
+  // 3. 构建 fullText + 位置映射
+  const entries: TextEntry[] = [];
+  let fullText = "";
+  for (const node of textNodes) {
+    const content = node.textContent || "";
+    entries.push({ node, globalStart: fullText.length, globalEnd: fullText.length + content.length });
+    fullText += content;
+  }
+
+  // 4. 段落检测 + 拆句 + scanSplit → 收集断点
+  const breakpoints: Breakpoint[] = [];
+
+  // 按段落分组：相邻文本节点之间有 block boundary → 新段落
+  const paragraphGroups: { startIdx: number; endIdx: number }[] = [];
+  let groupStart = 0;
+  for (let i = 1; i < textNodes.length; i++) {
+    if (hasBlockBoundaryBetween(textNodes[i - 1], textNodes[i])) {
+      paragraphGroups.push({ startIdx: groupStart, endIdx: i - 1 });
+      groupStart = i;
+    }
+  }
+  paragraphGroups.push({ startIdx: groupStart, endIdx: textNodes.length - 1 });
+
+  for (const group of paragraphGroups) {
+    // 提取该段落的文本
+    const paraStart = entries[group.startIdx].globalStart;
+    const paraEnd = entries[group.endIdx].globalEnd;
+    const paraText = fullText.slice(paraStart, paraEnd);
+
+    // 拆句
+    const sentences = splitIntoSentences(paraText);
+    let sentenceOffset = paraStart;
+
+    for (const sentence of sentences) {
+      const trimmed = sentence.trim();
+      if (!trimmed) continue;
+
+      // 找到这个句子在 fullText 中的实际起始位置
+      const sentStart = fullText.indexOf(trimmed, sentenceOffset);
+      if (sentStart === -1) {
+        sentenceOffset += sentence.length;
+        continue;
+      }
+
+      const scanResult = scanSplit(trimmed, config.scanThreshold, config.chunkGranularity);
+      if (scanResult.chunks.length > 1) {
+        // 将 chunk 断点映射回 fullText 偏移
+        let chunkOffset = sentStart;
+        for (let ci = 1; ci < scanResult.chunks.length; ci++) {
+          // 前面所有 chunk 的文本长度 = 当前 chunk 的起始偏移
+          chunkOffset += scanResult.chunks[ci - 1].text.length;
+          // 跳过 chunk 之间的空格
+          while (chunkOffset < paraEnd && fullText[chunkOffset] === " ") {
+            chunkOffset++;
+          }
+          breakpoints.push({ offset: chunkOffset, level: scanResult.chunks[ci].level });
+        }
+      }
+
+      sentenceOffset = sentStart + trimmed.length;
+    }
+  }
+
+  if (breakpoints.length === 0) {
+    // 没有断点 → 不拆分，走手动触发
+    addManualTrigger(el, text);
+    return;
+  }
+
+  // 5. 反向插入 <br> + 缩进 span
+  // 排序：从后往前，避免偏移失效
+  breakpoints.sort((a, b) => b.offset - a.offset);
+
+  for (const bp of breakpoints) {
+    // 找到对应的 text entry
+    const entry = entries.find(e => bp.offset >= e.globalStart && bp.offset < e.globalEnd);
+    if (!entry) continue;
+
+    // 安全检查：断点不能落在 <a> 内部
+    if (isInsideUrlAnchor(entry.node)) continue;
+
+    const localOffset = bp.offset - entry.globalStart;
+    if (localOffset <= 0 || localOffset >= (entry.node.textContent?.length || 0)) continue;
+
+    const remainder = entry.node.splitText(localOffset);
+    const br = document.createElement("br");
+    remainder.parentNode!.insertBefore(br, remainder);
+
+    // 缩进：用 span 包裹 remainder
+    if (bp.level > 0) {
+      const indent = document.createElement("span");
+      indent.className = `enlearn-indent-${bp.level}`;
+      indent.style.paddingLeft = `${bp.level}em`;
+      indent.style.display = "inline";
+      remainder.parentNode!.insertBefore(indent, remainder);
+      // 收集从 remainder 到下一个 <br> 或末尾的所有节点
+      const nodesToWrap: Node[] = [];
+      let current: Node | null = remainder;
+      while (current) {
+        const next: Node | null = current.nextSibling;
+        if (current.nodeType === Node.ELEMENT_NODE && (current as Element).tagName === "BR") break;
+        nodesToWrap.push(current);
+        current = next;
+      }
+      for (const n of nodesToWrap) {
+        indent.appendChild(n);
+      }
+    }
+  }
+
+  // 6. Vocab 标注：在克隆中的非 URL 文本节点上标记生词
+  const vocabAnnotations = isLoaded() ? annotateWords(text, knownWords) : [];
+  if (vocabAnnotations.length > 0) {
+    applyVocabToClone(clone, vocabAnnotations);
+  }
+
+  // 7. 标记为 chunked 元素
+  clone.classList.add("enlearn-chunked");
+  clone.setAttribute("data-original", text);
+  clone.style.setProperty("display", "block", "important");
+
+  // 8. 复制字体样式 + 插入
+  copyFontStyles(el, clone);
+  insertChunkedElement(el, clone);
+
+  // 9. 采集数据
+  const sentenceNewWords = vocabAnnotations.map(a => a.word);
+  saveSentenceQuiet(text, false, sentenceNewWords);
+}
+
+/**
+ * 在克隆元素中标注生词（DOM 手术方式）
+ */
+function applyVocabToClone(
+  clone: HTMLElement,
+  annotations: { word: string; definition: string }[]
+): void {
+  const wordMap = new Map(
+    annotations.map(a => [a.word.toLowerCase(), a.definition])
+  );
+  const wordPattern = annotations
+    .map(a => a.word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  const regex = new RegExp(`\\b(${wordPattern})\\b`, "gi");
+
+  // 收集所有非 URL 文本节点
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT, {
+    acceptNode(node: Node) {
+      if (isInsideUrlAnchor(node)) return NodeFilter.FILTER_REJECT;
+      if (!node.textContent || node.textContent.trim() === "") return NodeFilter.FILTER_SKIP;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  let n: Node | null;
+  while ((n = walker.nextNode())) {
+    textNodes.push(n as Text);
+  }
+
+  // 反向遍历文本节点（避免 TreeWalker 失效）
+  for (let ti = textNodes.length - 1; ti >= 0; ti--) {
+    const textNode = textNodes[ti];
+    const content = textNode.textContent || "";
+    const matches: { index: number; length: number; word: string }[] = [];
+
+    let match: RegExpExecArray | null;
+    regex.lastIndex = 0;
+    while ((match = regex.exec(content))) {
+      matches.push({ index: match.index, length: match[0].length, word: match[0] });
+    }
+
+    if (matches.length === 0) continue;
+
+    // 从后往前替换
+    let currentNode = textNode;
+    for (let mi = matches.length - 1; mi >= 0; mi--) {
+      const m = matches[mi];
+      const after = currentNode.splitText(m.index + m.length);
+      const wordNode = currentNode.splitText(m.index);
+      // wordNode 现在只包含匹配的词
+
+      const span = document.createElement("span");
+      span.className = "enlearn-word";
+      const def = wordMap.get(m.word.toLowerCase()) || "";
+      span.setAttribute("data-def", def);
+      span.setAttribute("data-word", m.word.toLowerCase());
+      span.textContent = wordNode.textContent;
+
+      wordNode.parentNode!.replaceChild(span, wordNode);
+      // currentNode 指向匹配前的部分，继续处理前面的匹配
+      void after; // after 保留在 DOM 中
+    }
+  }
+}
+
 // ========== DOM 扫描 ==========
 
 const DOM_SELECTORS = [
@@ -544,7 +770,7 @@ function scanPage(): void {
   for (const el of candidates) {
     if (processedElements.has(el)) continue;
     if (isEnlearnElement(el)) continue;
-    if (el.closest('nav, header, footer, aside, [role="navigation"], [role="banner"], [role="complementary"]')) continue;
+    if (el.closest('nav, header, footer, aside, [role="link"], [role="navigation"], [role="banner"], [role="complementary"]')) continue;
 
     // 跳过包含更具体匹配的父容器
     // 例如 Twitter 上 div[lang="en"] 可能同时匹配 tweetText 和包裹它的父容器
@@ -573,7 +799,16 @@ function scanPage(): void {
 
     // 统一扫读：按段落/句子本地拆分
     processedElements.add(el);
-    const paragraphs = filterUrlParagraphs(extractParagraphs(el));
+
+    // 含 URL 链接的元素 → clone + DOM 手术路径（保留 <a>）
+    const hasUrlLinks = el.querySelector('a[href^="http"]') !== null;
+    if (hasUrlLinks) {
+      processElementWithLinks(el, text);
+      continue;
+    }
+
+    // 不含链接 → 现有纯文本路径
+    const paragraphs = extractParagraphs(el);
     const allChunkedLines: string[] = [];
     let hasAnyChunks = false;
 
@@ -582,11 +817,6 @@ function scanPage(): void {
 
       const sentences = splitIntoSentences(paragraphs[pi]);
       for (const sentence of sentences) {
-        // 跳过含 URL 的句子
-        if (URL_PATTERN.test(sentence)) {
-          allChunkedLines.push(sentence);
-          continue;
-        }
         const scanResult = scanSplit(sentence, config.scanThreshold, config.chunkGranularity);
         if (scanResult.chunks.length > 1) {
           hasAnyChunks = true;

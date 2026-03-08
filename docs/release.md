@@ -27,48 +27,79 @@
 npm run release
 ```
 
-依次执行：跑测试 → 构建 → 打包成 `bai-it-v{版本号}.zip`。测试不通过会中断。
+依次执行：跑测试 → 构建 → 打包 Chrome/Edge zip + Firefox zip。测试不通过会中断。
 
-### 4. 提交 + 推送 + 创建 GitHub Release
+产物：
+- `bai-it-v{版本号}.zip` — Chrome / Edge 通用
+- `bai-it-firefox-v{版本号}.zip` — Firefox 专用（自动加 gecko id + 改 background.scripts）
+
+### 4. 生成 Firefox 源码包
+
+Firefox AMO 审核要求提供可构建的源码。
+
+```bash
+zip -r bai-it-source.zip . \
+  -x "node_modules/*" "dist/*" "dist-*" ".git/*" \
+  "bai-it-*.zip" "_local/*" "*.DS_Store"
+```
+
+### 5. 提交 + 推送 + 创建 GitHub Release
 
 ```bash
 git add -A
 git commit -m "release: v{版本号}"
 git tag v{版本号}
 git push origin main --tags
-gh release create v{版本号} bai-it-v{版本号}.zip \
+gh release create v{版本号} bai-it-v{版本号}.zip bai-it-firefox-v{版本号}.zip \
   --title "v{版本号} {简要说明}" \
   --notes "{发布说明，列出主要变更}"
 ```
 
-Claude 根据最近的 commit 自动生成发布说明。
+Claude 根据最近的 commit 自动生成发布说明。GitHub Release 同时挂 Chrome/Edge 和 Firefox 两个 zip。
 
-### 5. 提醒用户上传商店
+### 6. 提醒用户上传商店
 
 Claude 完成上面所有步骤后，告诉用户：
 
-> GitHub 发布完成。zip 文件在项目根目录：`bai-it-v{版本号}.zip`
+> GitHub 发布完成。zip 文件在项目根目录。
 >
-> 需要你手动上传到两个商店：
+> 需要你手动上传到三个商店：
 >
 > **Chrome Web Store**
 > 1. 打开 https://chrome.google.com/webstore/devconsole
 > 2. 点已有扩展 → Package → Upload new package
-> 3. 上传 zip → Submit for review
+> 3. 上传 `bai-it-v{版本号}.zip` → Submit for review
 >
 > **Edge Add-ons**
 > 1. 打开 https://partner.microsoft.com/dashboard/microsoftedge/public/login
-> 2. 点已有扩展 → Packages → 上传同一个 zip
+> 2. 点已有扩展 → Packages → 上传 `bai-it-v{版本号}.zip`
 > 3. Submit → Publish
+>
+> **Firefox Add-ons (AMO)**
+> 1. 打开 https://addons.mozilla.org/developers/addons
+> 2. 点已有扩展 → Upload New Version
+> 3. 上传 `bai-it-firefox-v{版本号}.zip`
+> 4. 上传源码包 `bai-it-source.zip` + 填写构建说明（见下方）
+> 5. Submit for review
+>
+> Firefox 构建说明（复制粘贴到 AMO 表单）：
+> ```
+> Requirements: Node.js 18+
+> Steps:
+> 1. npm install
+> 2. npm run build
+> 3. node scripts/package-firefox.mjs
+> 4. Output: bai-it-firefox-v{version}.zip
+> ```
 
-详细字段说明见 `_local/store-assets/chrome-web-store-submission.md` 和 `_local/store-assets/edge-add-ons-submission.md`。
+详细字段说明见 `_local/store-assets/` 下的各商店提交指南。
 
-### 6. 清理
+### 7. 清理
 
 用户确认商店上传完成后：
 
 ```bash
-rm bai-it-v*.zip
+rm bai-it-v*.zip bai-it-firefox-v*.zip bai-it-source.zip
 ```
 
 ---
@@ -77,9 +108,11 @@ rm bai-it-v*.zip
 
 - [ ] 版本号已确认
 - [ ] `manifest.json` version 已更新
-- [ ] `npm run release` 通过（测试 + 构建 + 打包）
+- [ ] `npm run release` 通过（测试 + 构建 + Chrome zip + Firefox zip）
+- [ ] `bai-it-source.zip` 源码包已生成
 - [ ] Git commit + tag + push
-- [ ] GitHub Release 已创建并挂上 zip
+- [ ] GitHub Release 已创建并挂上两个 zip
 - [ ] 用户已上传 Chrome Web Store
 - [ ] 用户已上传 Edge Add-ons
+- [ ] 用户已上传 Firefox AMO（含源码包）
 - [ ] 本地 zip 已清理
